@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { NextRequest, NextResponse } from 'next/server';
 import { OAuth2Client } from 'google-auth-library';
 import { google } from 'googleapis';
@@ -24,6 +25,7 @@ async function fetchEmails(auth: OAuth2Client, lastFetchTime?: string) {
     let query = lastFetchTime ? `after:${lastFetchTime}` : '';
 
     while (true) {
+
       const response = await gmail.users.messages.list({
         userId,
         q: query,

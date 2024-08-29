@@ -1,4 +1,5 @@
 export const unwantedKeywords = new Set<string>([
+  'noreply',
   'linkedin','tech','bank','verify','hello','team','discuss',
   'unsubscribe', 'newsletter', 'marketing', 'advertisement', 'promo', 'sale',
   'discount', 'offer', 'deal', 'limited time', 'exclusive', 'free trial',

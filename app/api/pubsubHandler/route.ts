@@ -46,7 +46,7 @@ const postHandler = async (req: NextRequest) => {
 
     if (!user) {
       console.error('User not found for email:', emailAddress);
-      return NextResponse.json({ error: 'User not found' }, { status: 404 });
+      return NextResponse.json({ error: 'User not found' }, { status: 200 });
     }
 
     const { userId } = user;

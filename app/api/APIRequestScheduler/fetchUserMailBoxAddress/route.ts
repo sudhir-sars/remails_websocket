@@ -4,7 +4,7 @@ import { google } from 'googleapis';
 import jwt from 'jsonwebtoken';
 import connectDb from '@/middleware/db/mongoose';
 import UserMailBoxAddress from '@/middleware/db/Model/userMailBoxAddress/UserMailBoxAddress';
-import { unwantedKeywords,unwantedDomains } from '@/app/api/utils/fromEmailIrrelevantList';
+import { unwantedKeywords, unwantedDomains } from '@/app/api/utils/fromEmailIrrelevantList';
 
 const oAuth2Client = new OAuth2Client(
   process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!,
@@ -14,51 +14,75 @@ const oAuth2Client = new OAuth2Client(
 interface DecodedToken {
   refreshToken: string;
 }
-const spamPatterns = [
-  /^[A-Z\s!]+$/,  // All caps with possible spaces and exclamation marks
-  /\d{1,2}%\s?off/i,  // Percentage discounts
-  /\$\d+(\.\d{2})?/,  // Dollar amounts
-  /free\s+shipping/i,  // Free shipping offers
-  /limited\s+time\s+offer/i,  // Limited time offers
-  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,  // Email addresses in subject
-  /^Re:\s/i,  // Replies (often used in spam)
-  /^Fwd:\s/i,  // Forwards (often used in spam)
-  /unsubscribe/i,  // Unsubscribe mentions
-];
+
+
+
+interface EmailHeaders {
+  id: string;
+  from: EmailAddress[];
+  to: EmailAddress[];
+  cc: EmailAddress[];
+  bcc: EmailAddress[];
+}
+interface EmailAddress {
+  email: string;
+  name: string;
+}
+
+// Define the interface for the userMailBoxAddress data
+interface UserMailBoxAddressData {
+  fromAddresses: EmailAddress[];
+  toAddresses: EmailAddress[];
+  metaAddresses: EmailAddress[];
+}
 
 function isUnwantedEmail(email: string, name: string): boolean {
-  const normalizedEmail = email.toLowerCase();
-  const normalizedName = name.toLowerCase();
-  const domain = normalizedEmail.split('@')[1];
+  const lowerCaseEmail = email.toLowerCase();
 
-  // Check for unwanted keywords in email or name
-  // if (Array.from(unwantedKeywords).some(keyword => 
-  //     normalizedEmail.includes(keyword) || normalizedName.includes(keyword))) {
-  //   return true;
-  // }
+  // Check for unwanted keywords in the local part of the email
+  const [localPart, domainPart] = lowerCaseEmail.split('@');
+  if (!domainPart) return false; // Invalid email format
+
+  // Convert Set to Array for .some() method
+  const unwantedKeywordsArray = Array.from(unwantedKeywords);
+  const unwantedDomainsArray = Array.from(unwantedDomains);
+
+  // Check for unwanted keywords
+  if (unwantedKeywordsArray.some(keyword => localPart.includes(keyword))) {
+    return true;
+  }
 
   // Check for unwanted domains
-  // if (unwantedDomains.has(domain)) {
-  //   return true;
-  // }
+  if (unwantedDomainsArray.includes(domainPart)) {
+    return true;
+  }
 
-  // // Check for spam patterns in email or name
-  // if (spamPatterns.some(pattern => pattern.test(email) || pattern.test(name))) {
-  //   return true;
-  // }
+  // Additional pattern checks for known spammy or generic domains
+  const spamPattern = /@(?:.*\.)?(ru|cn|xyz|tk|cc|info)$/i;
+  if (spamPattern.test(lowerCaseEmail)) {
+    return true;
+  }
+
+  // Specific job-related and other known service domains to filter out
+  const jobSites = new Set([
+    'linkedin.com', 'indeed.com', 'glassdoor.com', 'monster.com', 'careerbuilder.com',
+    'ziprecruiter.com', 'workable.com', 'adp.com', 'paychex.com', 'namely.com',
+    'bamboohr.com', 'gusto.com', 'zenefits.com', 'lever.co', 'greenhouse.io','github.com'
+  ]);
+
+  if (jobSites.has(domainPart)) {
+    return true;
+  }
 
   return false;
 }
 
-// Use this function instead of containsUnwantedKeyword
-function filterUnwantedEmails(emailAddresses: { email: string; name: string }[]): { email: string; name: string }[] {
+function filterUnwantedEmails(emailAddresses: EmailAddress[]): EmailAddress[] {
   return emailAddresses.filter(({ email, name }) => !isUnwantedEmail(email, name));
 }
 
-
-
-function extractEmailAddresses(header: string): { email: string; name: string }[] {
-  const addresses: { email: string; name: string }[] = [];
+function extractEmailAddresses(header: string): EmailAddress[] {
+  const addresses: EmailAddress[] = [];
 
   header.split(',').forEach(part => {
     part = part.trim();
@@ -86,12 +110,12 @@ function extractEmailAddresses(header: string): { email: string; name: string }[
   return addresses;
 }
 
-async function fetchEmailAddresses(auth: OAuth2Client, messageIds: string[]) {
+async function fetchEmailAddresses(auth: OAuth2Client, messageIds: string[]): Promise<EmailHeaders[]> {
   const gmail = google.gmail({ version: 'v1', auth });
   const userId = 'me';
   const headersToFetch = ['From', 'To', 'Cc', 'Bcc'];
 
-  const fetchEmailAddressesForMessage = async (messageId: string) => {
+  const fetchEmailAddressesForMessage = async (messageId: string): Promise<EmailHeaders | null> => {
     try {
       const { data } = await gmail.users.messages.get({
         userId,
@@ -103,21 +127,22 @@ async function fetchEmailAddresses(auth: OAuth2Client, messageIds: string[]) {
       const headers = data.payload?.headers || [];
       const getHeader = (name: string) => headers.find(header => header.name?.toLowerCase() === name.toLowerCase())?.value || '';
 
-      return headersToFetch.reduce((result, header) => {
-        const headerValue = getHeader(header);
-        if (headerValue) {
-          result[header.toLowerCase()] = extractEmailAddresses(headerValue);
-     
-        }
-        return result;
-      }, { id: messageId, from: [], to: [], cc: [], bcc: [] } as { id: string; from: { email: string; name: string }[]; to: { email: string; name: string }[]; cc: { email: string; name: string }[]; bcc: { email: string; name: string }[] });
+      const result: EmailHeaders = {
+        id: messageId,
+        from: extractEmailAddresses(getHeader('From')),
+        to: extractEmailAddresses(getHeader('To')),
+        cc: extractEmailAddresses(getHeader('Cc')),
+        bcc: extractEmailAddresses(getHeader('Bcc')),
+      };
+
+      return result;
     } catch (err) {
       console.error(`Error fetching email addresses for message ${messageId}:`, err);
       return null;
     }
   };
 
-  return (await Promise.all(messageIds.map(fetchEmailAddressesForMessage))).filter(Boolean);
+  return (await Promise.all(messageIds.map(fetchEmailAddressesForMessage))).filter((emailHeaders): emailHeaders is EmailHeaders => emailHeaders !== null);
 }
 
 const handler = async (req: NextRequest) => {
@@ -138,38 +163,36 @@ const handler = async (req: NextRequest) => {
     const emailAddresses = await fetchEmailAddresses(oAuth2Client, messageIds);
 
     // Fetch existing data from the database
-    const userMailBoxAddress = await UserMailBoxAddress.findOne({ userId });
+    const userMailBoxAddress = await UserMailBoxAddress.findOne({ userId }) as UserMailBoxAddressData | null;
 
     // Prepare data for updating
     const existingData = userMailBoxAddress ? {
-      fromAddresses: new Map(userMailBoxAddress.fromAddresses.map(addr => [addr.email, addr.name])),
-      toAddresses: new Map(userMailBoxAddress.toAddresses.map(addr => [addr.email, addr.name])),
-      metaAddresses: new Map(userMailBoxAddress.metaAddresses.map(addr => [addr.email, addr.name]))
+      fromAddresses: new Map(userMailBoxAddress.fromAddresses.map((addr: EmailAddress) => [addr.email, addr.name])),
+      toAddresses: new Map(userMailBoxAddress.toAddresses.map((addr: EmailAddress) => [addr.email, addr.name])),
+      metaAddresses: new Map(userMailBoxAddress.metaAddresses.map((addr: EmailAddress) => [addr.email, addr.name])),
     } : {
       fromAddresses: new Map<string, string>(),
       toAddresses: new Map<string, string>(),
-      metaAddresses: new Map<string, string>()
+      metaAddresses: new Map<string, string>(),
     };
 
     // Update data with new email addresses
     emailAddresses.forEach(email => {
-      if (email) {
-        email.from = filterUnwantedEmails(email.from);
-        email.to = filterUnwantedEmails(email.to);
-        const metaAddresses = filterUnwantedEmails([...email.from, ...email.to, ...email.cc, ...email.bcc]);
+      email.from = filterUnwantedEmails(email.from);
+      email.to = filterUnwantedEmails(email.to);
+      const metaAddresses = filterUnwantedEmails([...email.from, ...email.to, ...email.cc, ...email.bcc]);
 
-        email.from.forEach(({ email: addr, name }) => {
-          existingData.fromAddresses.set(addr, name);
-        });
+      email.from.forEach(({ email: addr, name }) => {
+        existingData.fromAddresses.set(addr, name);
+      });
 
-        email.to.forEach(({ email: addr, name }) => {
-          existingData.toAddresses.set(addr, name);
-        });
+      email.to.forEach(({ email: addr, name }) => {
+        existingData.toAddresses.set(addr, name);
+      });
 
-        metaAddresses.forEach(({ email: addr, name }) => {
-          existingData.metaAddresses.set(addr, name);
-        });
-      }
+      metaAddresses.forEach(({ email: addr, name }) => {
+        existingData.metaAddresses.set(addr, name);
+      });
     });
 
     // Prepare final update data
@@ -194,7 +217,5 @@ const handler = async (req: NextRequest) => {
     return NextResponse.json({ success: false, error: 'Failed to retrieve email addresses or update database' }, { status: 500 });
   }
 };
-
-
 
 export const POST = connectDb(handler);
